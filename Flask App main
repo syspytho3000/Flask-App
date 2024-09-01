@@ -1,0 +1,436 @@
+my_flask_app/
+├── app.py
+├── templates/
+│   ├── index.html
+│   ├── register.html
+│   ├── location.html
+│   ├── map.html
+│   ├── login.html
+│   ├── messages.html
+│   └── profile.html
+├── static/
+│   ├── css/
+│   ├── js/
+│   └── images/
+├── locations.db
+└── requirements.txt
+
+
+from flask import Flask, render_template, request, redirect, url_for, flash
+from flask_mail import Mail, Message
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_socketio import SocketIO, emit
+from datetime import datetime
+import folium
+import requests
+from math import radians, sin, cos, sqrt, atan2
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///locations.db'
+app.config['SECRET_KEY'] = 'your_secret_key'
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USE_SSL'] = False
+app.config['MAIL_USERNAME'] = 'michaelbaldwin780@gmail.com'
+app.config['MAIL_PASSWORD'] = 'uutw jkjh lrac vxww'
+
+mail = Mail(app)
+socketio = SocketIO(app)
+db = SQLAlchemy(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+
+# Dummy data for registered users
+registered_users = {}
+
+class User(UserMixin):
+    def __init__(self, id):
+        self.id = id
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User(user_id)
+
+class Location(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), nullable=False)
+    latitude = db.Column(db.Float, nullable=False)
+    longitude = db.Column(db.Float, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        email = request.form['email']
+        registered_users[email] = True
+        send_confirmation_email(email)
+        flash('A confirmation email has been sent to your email address.', 'success')
+        return redirect(url_for('location', email=email))
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        if email in registered_users:
+            user = User(email)
+            login_user(user)
+            return redirect(url_for('location', email=email))
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('index'))
+
+@app.route('/location/<email>')
+@login_required
+def location(email):
+    if email != current_user.id:
+        return "Unauthorized", 403
+
+    lat, lon = get_gps_coordinates()
+    new_location = Location(email=email, latitude=lat, longitude=lon)
+    db.session.add(new_location)
+    db.session.commit()
+
+    map = folium.Map(location=[lat, lon], zoom_start=12)
+    folium.Marker([lat, lon], popup='Your Location').add_to(map)
+    map.save('templates/map.html')
+
+    return render_template('location.html', email=email)
+
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+
+@socketio.on('request_location')
+def handle_request_location(data):
+    lat, lon = get_gps_coordinates()
+    emit('location_update', {'lat': lat, 'lon': lon})
+
+@socketio.on('check_geofence')
+def handle_check_geofence(data):
+    lat, lon = get_gps_coordinates()
+    if not is_within_geofence(lat, lon):
+        emit('geofence_alert', {'lat': lat, 'lon': lon})
+
+@socketio.on('emergency_alert')
+def handle_emergency_alert():
+    print('Emergency alert received')
+
+def get_gps_coordinates():
+    # Replace with actual GPS fetching logic
+    response = requests.get('https://ipinfo.io')
+    data = response.json()
+    loc = data['loc'].split(',')
+    return float(loc[0]), float(loc[1])
+
+def is_within_geofence(lat, lon):
+    # Red Deer coordinates
+    red_deer_lat = 52.268
+    red_deer_lon = -113.811
+    geofence_radius = 100  # in km
+
+    # Calculate the distance using the Haversine formula
+    R = 6371  # Earth radius in km
+    dlat = radians(lat - red_deer_lat)
+    dlon = radians(lon - red_deer_lon)
+    a = sin(dlat / 2) ** 2 + cos(radians(red_deer_lat)) * cos(radians(lat)) * sin(dlon / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    distance = R * c
+
+    return distance <= geofence_radius
+
+def send_confirmation_email(email):
+    token = 'dummy_token'  # Generate a real token in a real application
+    msg = Message('Confirm Your Email', sender='michaelbaldwin780@gmail.com', recipients=[email])
+    msg.body = f'Please click the link to confirm your email: http://127.0.0.1:5000/confirm/{token}'
+    mail.send(msg)
+
+@app.route('/confirm/<token>')
+def confirm_email(token):
+    # Verify the token and activate the user
+    flash('Your email has been confirmed!', 'success')
+    return redirect(url_for('index'))
+
+if __name__ == '__main__':
+    db.create_all()
+    socketio.run(app, debug=True)
+
+HTML Templates
+index.html:
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Home</title>
+</head>
+<body>
+    <h1>Welcome to the GPS Tracking App</h1>
+    <a href="/register">Register</a>
+    <a href="/login">Login</a>
+</body>
+</html>
+
+register.html:
+
+HTML
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Register</title>
+</head>
+<body>
+    <h1>Register</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <ul>
+            {% for category, message in messages %}
+                <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+    {% endwith %}
+    <form method="post">
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" required>
+        <button type="submit">Register</button>
+    </form>
+</body>
+</html>
+
+location.html:
+
+HTML
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Location</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <h1>Your Location</h1>
+    <div id="map" style="height: 500px;"></div>
+    <button id="emergency">Send Emergency Alert</button>
+    <script>
+        var socket = io();
+        var map = L.map('map').setView([52.268, -113.811], 12);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        var marker = L.marker([52.268, -113.811]).addTo(map);
+
+        socket.on('location_update', function(data) {
+            var lat = data.lat;
+            var lon = data.lon;
+            marker.setLatLng([lat, lon]);
+            map.setView([lat, lon], 12);
+        });
+
+        socket.on('geofence_alert', function(data) {
+            alert('You have left the allowed area!');
+        });
+
+        document.getElementById('emergency').addEventListener('
+
+Step 1: Create a CSS File
+Create a new file named styles.css in the static/css directory.
+
+static/css/styles.css:
+
+CSS
+
+body {
+    background-color: #000000; /* Black background */
+    color: #ffffff; /* White text */
+    font-family: Arial, sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: #ffffff; /* White headings */
+    font-weight: bold;
+}
+
+a {
+    color: #ffd700; /* Gold links */
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+button {
+    background-color: #000000; /* Black button background */
+    color: #ffffff; /* White button text */
+    border: 2px solid #ffffff; /* White border */
+    padding: 10px 20px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover {
+    background-color: #ffd700; /* Gold background on hover */
+    color: #000000; /* Black text on hover */
+}
+
+input[type="email"], input[type="text"], input[type="password"] {
+    background-color: #000000; /* Black input background */
+    color: #ffffff; /* White input text */
+    border: 2px solid #ffffff; /* White border */
+    padding: 10px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+form {
+    max-width: 400px;
+    margin: 0 auto;
+    padding: 20px;
+    border: 2px solid #ffffff; /* White border */
+    border-radius: 10px;
+}
+
+ul {
+    list-style-type: none;
+    padding: 0;
+}
+
+li {
+    margin: 10px 0;
+}
+
+.flash-message {
+    background-color: #ffd700; /* Gold background */
+    color: #000000; /* Black text */
+    padding: 10px;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+Step 2: Link the CSS File in Your HTML Templates
+Update your HTML templates to link the CSS file.
+
+index.html:
+
+HTML
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Home</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <h1>Welcome to the GPS Tracking App</h1>
+    <a href="/register">Register</a>
+    <a href="/login">Login</a>
+</body>
+</html>
+
+register.html:
+
+HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Home</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <h1>Welcome to the GPS Tracking App</h1>
+    <a href="/register">Register</a>
+    <a href="/login">Login</a>
+</body>
+</html>
+
+login.html:
+
+HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Login</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <h1>Login</h1>
+    <form method="post">
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" required>
+        <button type="submit">Login</button>
+    </form>
+</body>
+</html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Location</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <h1>Your Location</h1>
+    <div id="map" style="height: 500px;"></div>
+    <button id="emergency">Send Emergency Alert</button>
+    <script>
+        var socket = io();
+        var map = L.map('map').setView([52.268, -113.811], 12);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        var marker = L.marker([52.268, -113.811]).addTo(map);
+
+        socket.on('location_update', function(data) {
+            var lat = data.lat;
+            var lon = data.lon;
+            marker.setLatLng([lat, lon]);
+            map.setView([lat, lon], 12);
+        });
+
+        socket.on('geofence_alert', function(data) {
+            alert('You have left the allowed area!');
+        });
+
+        document.getElementById('emergency').addEventListener('click', function() {
+            socket.emit('emergency_alert');
+        });
+
+        // Periodically check the geofence
+        setInterval(function() {
+            socket.emit('check_geofence');
+        }, 60000);  // Check every minute
+
+        socket.emit('request_location');
+    </script>
+</body>
+</html>
